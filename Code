@@ -1,0 +1,581 @@
+
+      
+      nba_pbp <- hoopR::load_nba_pbp(2023)
+      
+      #range(nba_pbp$game_date)
+      
+      this_year_pbp <- hoopR::load_nba_pbp(2024)
+      
+      #mbb_pbp <- hoopR::load_mbb_pbp(2023)
+      
+      player_name24 <- hoopR::load_nba_player_box(2024)%>%
+        select(athlete_id, athlete_display_name, athlete_headshot_href,team_logo)
+      
+      player_name24 <- player_name24[!duplicated(player_name24$athlete_id), ]
+      
+      
+      
+      
+      train_pbp_data <- nba_pbp%>%
+        mutate(is_shooting_play = if_else(shooting_play == TRUE, 1,0),
+               is_made_shot = if_else(scoring_play == TRUE,1,0),
+               is_home_team = if_else(home_team_id == team_id,1,0),
+               score_differential = if_else(is_home_team == 1, home_score - away_score, away_score - home_score),
+               is_offensive_rebound = if_else(type_text == "Offensive Rebound", 1,0),
+               is_free_throw = if_else(grepl("Free Throw",type_text), 1,0),
+               defense_team = if_else(team_id == home_team_id, away_team_abbrev,home_team_abbrev),
+               offense_team = if_else(team_id == home_team_id, home_team_abbrev, away_team_abbrev))%>%
+               # is_foul = if_else(type_text == "Shooting Foul"|type_text == "Personal Foul"|
+               #                   type_text == "Offensive Foul"|type_text == "Loose Ball Foul"|
+               #                    type_text == "Delay Technical"|type_text == "Technical Foul"|
+               #                     type_text == "Technical Foul"|type_text == "Personal Take Foul"|
+               #                     type_text == "Double Technical Foul"|, 1,0))%>%
+        filter(season_type == 2,
+               defense_team != "LEB",
+               defense_team != "GIA")%>%
+        group_by(defense_team)%>%
+        mutate(points_allowed_per_game = sum(score_value)/48)%>%
+        ungroup()
+               # coordinate_x != 214748406.75,
+               # coordinate_x != -214748406.75,
+               # coordinate_y != 214748406.75,
+               # coordinate_y != -214748406.75)%>%
+        #filter(is_shooting_play == 1)
+        #filter(type_text == "Jump Shot",
+               #home_team_name == "Boston")
+        #rename("coordinate_y" == y_loc)
+        #filter(grepl("Free Throw", type_text))
+      #     
+      # train_pbp_data <- filter(train_pbp_data, coordinate_x != "NA" & coordinate_y != "NA")    
+# 
+# 
+#       train_pbp_data <- train_pbp_data%>%
+#         reframe(defense_team, points_allowed_per_game)
+# 
+# 
+#       train_pbp_data<- train_pbp_data[!duplicated(train_pbp_data$defense_team), ]
+# 
+
+      
+      train_pbp_data <- train_pbp_data%>% 
+        group_by(game_id)%>%
+        mutate(time_differential = lag(start_game_seconds_remaining)- start_game_seconds_remaining,
+               is_offensive_rebound_shot = if_else(lag(type_text == "Offensive Rebound") &
+                                                     time_differential <3 & 
+                                                     team_id == lag(team_id), 1,0))%>%
+        ungroup()
+      
+      
+      
+      train_pbp_data$time_differential[is.na(train_pbp_data$time_differential)] <- 0
+      train_pbp_data$is_offensive_rebound_shot[is.na(train_pbp_data$is_offensive_rebound_shot)] <- 0
+      train_pbp_data$is_home_team[is.na(train_pbp_data$is_home_team)] <- 0
+      # #train_pbp_data$is_rebound <- ifelse(Train_PbP_Data$time_diff < 3 & 
+      #                                       Train_PbP_Data$event_type %in% fenwick_events &
+      #                                       Train_PbP_Data$event_team == 
+      #                                       lag(Train_PbP_Data$event_team),
+      #                                     1, 0)
+      # 
+      #Train_PbP_Data$is_rebound[is.na(Train_PbP_Data$is_rebound)] <- 0
+      
+      
+      train_pbp_data <- train_pbp_data%>%
+          mutate(is_fast_break = ifelse(time_differential < 10 &
+                                         lag(is_offensive_rebound) == 0 &
+                                          is_free_throw != 1 & 
+                                          shooting_play == 1,1, 0))%>%
+        filter(is_shooting_play == 1)
+        #reframe(type_text,text,clock_display_value,time_differential, is_free_throw,is_shooting_play,is_fast_break)
+      
+      
+      
+      
+      
+      
+      train_pbp_data$coordinate_y <- ifelse(train_pbp_data$coordinate_x < 0,
+                                            -1 * train_pbp_data$coordinate_y, train_pbp_data$coordinate_y)
+      
+      train_pbp_data$coordinate_x <- abs(train_pbp_data$coordinate_x)
+      
+      
+      train_pbp_data$shot_angle <- (asin(abs(train_pbp_data$coordinate_y)/sqrt((42.25 
+                                                                                    - abs(train_pbp_data$coordinate_x))^2
+                                                                                   + train_pbp_data$coordinate_y^2))*180)/ 3.14
+      
+      
+      
+      train_pbp_data$shot_angle <- ifelse(abs(train_pbp_data$coordinate_x) > 88, 90 + 
+                                                (180-(90 + train_pbp_data$shot_angle)), 
+                                          train_pbp_data$shot_angle)
+      
+      train_pbp_data$distance <- sqrt((42.25 - abs(train_pbp_data$coordinate_x))^2 + train_pbp_data$coordinate_y^2)
+      
+      
+      
+      shots <- train_pbp_data%>%
+        select(is_made_shot,score_value,athlete_id_1,type_text,text,score_differential,
+               time_differential,is_fast_break,is_home_team,is_free_throw,
+               is_offensive_rebound_shot,shot_angle,distance,points_allowed_per_game,
+               score_value,offense_team,defense_team)%>%
+        mutate(shot_attempt_value = case_when(grepl("three point",text) ~ 3,
+                                                  is_free_throw == 1 ~ 1,
+                                                  TRUE~ 2))
+      
+      
+        
+      
+      shots <- left_join(shots, player_name, by = c("athlete_id_1" = "athlete_id"))
+      
+      
+      shots$type_text <- as.factor(shots$type_text)
+      shots$time_differential <- as.numeric(shots$time_differential)
+      shots$is_fast_break <- as.factor(shots$is_fast_break)
+      shots$label  <- as.numeric(shots$is_made_shot)
+      shots$is_home_team <- as.factor(shots$is_home_team)
+      shots$is_offensive_rebound_shot <- as.factor(shots$is_offensive_rebound_shot)
+    
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      # Test Data with 2024 Data
+      
+      
+      
+      train_pbp_data24 <- this_year_pbp%>%
+        mutate(is_shooting_play = if_else(shooting_play == TRUE, 1,0),
+               is_made_shot = if_else(scoring_play == TRUE,1,0),
+               is_home_team = if_else(home_team_id == team_id,1,0),
+               score_differential = if_else(is_home_team == 1, home_score - away_score, away_score - home_score),
+               is_offensive_rebound = if_else(type_text == "Offensive Rebound", 1,0),
+               is_free_throw = if_else(grepl("Free Throw",type_text), 1,0),
+               defense_team = if_else(team_id == home_team_id, away_team_abbrev,home_team_abbrev),
+               offense_team = if_else(team_id == home_team_id, home_team_abbrev, away_team_abbrev))%>%
+        filter(season_type == 2)%>%
+        group_by(defense_team)%>%
+        mutate(points_allowed_per_game = sum(score_value)/48)%>%
+        ungroup()
+    
+      
+      
+      train_pbp_data24 <- train_pbp_data24%>% 
+        group_by(game_id)%>%
+        mutate(time_differential = lag(start_game_seconds_remaining)- start_game_seconds_remaining,
+               is_offensive_rebound_shot = if_else(lag(type_text == "Offensive Rebound") &
+                                                     time_differential <3 & 
+                                                     team_id == lag(team_id), 1,0))%>%
+        ungroup()
+      
+      
+      
+      train_pbp_data24$time_differential[is.na(train_pbp_data24$time_differential)] <- 0
+      train_pbp_data24$is_offensive_rebound_shot[is.na(train_pbp_data24$is_offensive_rebound_shot)] <- 0
+      train_pbp_data24$is_home_team[is.na(train_pbp_data24$is_home_team)] <- 0
+    
+      train_pbp_data24 <- train_pbp_data24%>%
+        mutate(is_fast_break = ifelse(time_differential < 10 &
+                                        lag(is_offensive_rebound) == 0 &
+                                        is_free_throw != 1 & 
+                                        shooting_play == 1,1, 0))%>%
+        filter(is_shooting_play == 1)
+   
+      
+      
+      
+      
+      train_pbp_data24$coordinate_y <- ifelse(train_pbp_data24$coordinate_x < 0,
+                                            -1 * train_pbp_data24$coordinate_y, train_pbp_data24$coordinate_y)
+      
+      train_pbp_data24$coordinate_x <- abs(train_pbp_data24$coordinate_x)
+      
+      
+      train_pbp_data24$shot_angle <- (asin(abs(train_pbp_data24$coordinate_y)/sqrt((42.25 
+                                                                                - abs(train_pbp_data24$coordinate_x))^2
+                                                                               + train_pbp_data24$coordinate_y^2))*180)/ 3.14
+      
+      
+      
+      train_pbp_data24$shot_angle <- ifelse(abs(train_pbp_data24$coordinate_x) > 88, 90 + 
+                                            (180-(90 + train_pbp_data24$shot_angle)), 
+                                          train_pbp_data24$shot_angle)
+      
+      train_pbp_data24$distance <- sqrt((42.25 - abs(train_pbp_data24$coordinate_x))^2 + train_pbp_data24$coordinate_y^2)
+      
+      
+      
+      shots24 <- train_pbp_data24%>%
+        select(is_made_shot,score_value,athlete_id_1,type_text,text,score_differential,
+               time_differential,is_fast_break,is_home_team,is_free_throw,
+               is_offensive_rebound_shot,shot_angle,distance,points_allowed_per_game,
+               score_value,offense_team,defense_team)%>%
+        mutate(shot_attempt_value = case_when(grepl("three point",text) ~ 3,
+                                              is_free_throw == 1 ~ 1,
+                                              TRUE~ 2))
+      
+      
+      #filter(is.na(label), is.na(type_text))
+      #mutate(made_shot = case_when(scoring_play == "TRUE"~ 1, TRUE ~ 0))
+      
+      shots24 <- left_join(shots24, player_name24, by = c("athlete_id_1" = "athlete_id"))
+      
+      
+      shots24$type_text <- as.factor(shots24$type_text)
+      shots24$time_differential <- as.numeric(shots24$time_differential)
+      shots24$is_fast_break <- as.factor(shots24$is_fast_break)
+      shots24$label  <- as.numeric(shots24$is_made_shot)
+      shots24$is_home_team <- as.factor(shots24$is_home_team)
+      shots24$is_offensive_rebound_shot <- as.factor(shots24$is_offensive_rebound_shot)
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      library(caret)
+    
+       smp_size <- floor(nrow(shots))
+    
+       set.seed(2009)
+   
+      #ind <- sample(seq_len(nrow(shots)), size = smp_size)
+      train <- as.matrix(shots)
+      test <- as.matrix(shots24)
+      
+      library(xgboost)
+      
+      # 
+      # xpoints_model <- xgboost(
+      #               data = train[,2:78],
+      #               label = train[,1],
+      #               nrounds = 1000,
+      #               objective = "binary:logistic",
+      #               early_stopping_rounds = 3,
+      #               max_depth = 6,
+      #               eta = .25)
+      # 
+      # 
+      # vip(xpoints_model)
+      # summary(xpoints_model)
+      # 
+      # 
+      # xgb.plot.tree(model = xpoints_model, trees = 1)
+      # 
+      # pred_xgb <- predict(xpoints_model, test[, 2:78])
+      # 
+      # yhat <- pred_xgb
+      # 
+      # y <- test[, 1]
+      # 
+      # postResample(yhat,y)
+      # 
+      # str(test)
+      # 
+      # pbp_data_join <- train_pbp_data%>%
+      #   select()
+      # 
+      # 
+      # 
+      # 
+      train <- data.frame(train)
+      test <- data.frame(test)
+      
+      
+      train$type_text <- as.factor(train$type_text)
+      train$time_differential <- as.numeric(train$time_differential)
+      train$is_fast_break <- as.factor(train$is_fast_break)
+      train$is_made_shot  <- as.factor(train$is_made_shot)
+      train$is_home_team <- as.factor(train$is_home_team)
+      train$points_allowed_per_game <- as.numeric(train$points_allowed_per_game)
+      train$shot_angle <- as.numeric(train$shot_angle)
+      train$distance <- as.numeric(train$distance)
+      train$score_differential <- as.numeric(train$score_differential)
+      train$is_offensive_rebound_shot <- as.factor(train$is_offensive_rebound_shot)
+      
+      test$type_text <- as.factor(test$type_text)
+      test$time_differential <- as.numeric(test$time_differential)
+      test$is_fast_break <- as.factor(test$is_fast_break)
+      test$is_made_shot  <- as.numeric(test$is_made_shot)
+      test$is_home_team <- as.factor(test$is_home_team)
+      test$points_allowed_per_game <- as.numeric(test$points_allowed_per_game)
+      test$shot_angle <- as.numeric(test$shot_angle)
+      test$distance <- as.numeric(test$distance)
+      test$score_differential <- as.numeric(test$score_differential)
+      test$is_offensive_rebound_shot <- as.factor(test$is_offensive_rebound_shot)
+      test$shot_attempt_value <- as.numeric(test$shot_attempt_value)
+      test$score_value <- as.numeric(test$score_value)
+      
+      
+      
+      xmade_shot_model <- glm(is_made_shot ~ poly(distance, 3, raw = TRUE) + 
+                       poly(shot_angle, 3, raw = TRUE) + type_text + 
+                       score_differential + time_differential + is_fast_break +
+                       is_offensive_rebound_shot + is_home_team + points_allowed_per_game,
+                     data = train, 
+                     family = binomial(link = 'logit'))
+      
+      
+      
+      #summary(xmade_shot_model)
+      vip(xmade_shot_model)
+      
+      
+      test$xshot_made <- predict(xmade_shot_model, test, type = "response")
+      
+      
+      
+      test <- test %>%
+        mutate(xPoints = xshot_made * shot_attempt_value)
+      
+         FT <- test%>%
+           group_by(athlete_id_1) %>%
+           filter(is_free_throw == 0)%>%
+           mutate(number_of_shots = n(),
+                  number_of_makes = sum(is_made_shot),
+                  xFG_perc = mean(xshot_made))%>%
+           #ungroup()%>%
+           mutate(mean_FG = number_of_makes/number_of_shots)%>%
+           select(athlete_id_1, athlete_display_name,athlete_headshot_href,number_of_shots,number_of_makes,mean_FG,xFG_perc)
+              
+         
+         
+         FT <- FT[!duplicated(FT$athlete_id_1), ]
+      
+     xPoints_player <- test%>%      
+      group_by(athlete_id_1) %>% 
+        mutate(PTS = sum(score_value),
+                  xPTS = sum(xPoints))%>%
+     ungroup()
+      
+     
+     xPoints_player <- xPoints_player[!duplicated(xPoints_player$athlete_id_1), ]
+     
+     xPoints_player_Final <- left_join(xPoints_player, FT, by="athlete_id_1")
+     
+     
+     xPoints_player_Final <- xPoints_player_Final%>%
+       mutate(Shot_Making = round((PTS - xPTS)/number_of_shots, 2),
+              xPTS_per_shot = round(xPTS/number_of_shots,2))%>%
+       select(athlete_display_name.x,athlete_headshot_href.x,number_of_shots,number_of_makes, mean_FG,xFG_perc,PTS,xPTS, xPTS_per_shot,Shot_Making)%>%
+       filter(number_of_shots > 60)
+      
+     xPoints_table <- xPoints_player_Final%>%
+       arrange(xPTS_per_shot)%>%
+        mutate(rank = row_number())%>%
+       filter(rank <= 15)%>%
+       select(rank, athlete_display_name.x,athlete_headshot_href.x,number_of_shots,xPTS_per_shot,Shot_Making)
+     
+     
+     
+     
+     xPoints_table %>%
+       gt() %>%
+       gtExtras::gt_theme_espn()%>%
+       gtExtras::gt_img_rows(athlete_headshot_href.x)%>%
+       cols_label(rank = "Rank",
+                  athlete_display_name.x = "Player",
+                  athlete_headshot_href.x = " ",
+                  number_of_shots = "Number of Shots",
+                  xPTS_per_shot = "Expected Points per Shot",
+                  Shot_Making = "Bucket Making")%>%
+       data_color(columns = xPTS_per_shot,
+                  palette = c("red","indianred1","white", "steelblue1", "blue"),
+                  domain = c(1.1,2))%>%
+       data_color(columns = Shot_Making,
+                  palette = c("red","indianred1","white", "steelblue1", "blue"),
+                  domain = c(-.7,.5))%>%
+       gt::cols_align(
+         align = "center",
+         columns = vars(xPTS_per_shot))%>%
+       gt::cols_align(
+         align = "center",
+         columns = vars(Shot_Making))%>%
+       gt::cols_align(
+         align = "center",
+         columns = vars(number_of_shots))%>%
+       tab_header(title = "Who Takes the Worst Quality Shots and How do they Execute?",
+                  subtitle = "2023-2024 Season | Minimum 60 Shots Taken")%>%
+       tab_source_note(source_note = "By Bucknell Analytics | Data:hoopR")
+     
+     
+     
+     
+     
+     
+     ggplot(aes(x = xPTS, y = PTS), data = xPoints_player_Final) +
+       geom_point(aes(x = xPTS, y = PTS), data = xPoints_player_Final) +
+       geom_label_repel(aes(label=athlete_display_name.x), size = 2.25)+
+       #geom_point(color = "white")+
+       geom_smooth(method = "lm", color = "gray", se = FALSE, alpha = 0.1)+
+       theme_minimal() +
+       theme(legend.position = "right", 
+             panel.grid.minor = element_blank(),
+             plot.background = element_rect(fill = "#141622"),
+             panel.background = element_rect(fill = "#141622", 
+                                             colour = "#141622",
+                                             size = 2, 
+                                             linetype = "solid"),
+             panel.grid.major = element_line(size = 0.5, 
+                                             linetype = 'solid',
+                                             color = "gray"),
+             axis.title.x = element_text(size = 13, 
+                                         face = "bold", 
+                                         color = "white"),
+             axis.title.y = element_text(size = 13, 
+                                         face = "bold", 
+                                         colour = "white"),
+             axis.text.x = element_text(color = "white"),
+             axis.text.y = element_text(color = "white"),
+             plot.title = element_text(face = "bold", 
+                                       colour = "white", 
+                                       size = 14),
+             plot.subtitle = element_text(colour = "white", 
+                                          size = 10),
+             plot.caption = element_text(colour = "white", 
+                                         size = 10),
+             plot.caption.position = "plot")+
+       labs(x = "Expected Points",
+            y = "Points",
+            caption = "By Bucknell Analytics | Data: hoopR",
+            title = "Expected Points vs Points",
+            subtitle = "2023-2024 Season | Minimum 60 Shots Taken")+
+       theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+       theme(plot.subtitle = element_text(hjust = 0.5))
+     
+     
+     
+     play_xPoints <- lm(PTS ~ xPTS, data = xPoints_player_Final)
+     
+     summary(play_xPoints)
+     
+     
+      
+     
+     FT_team <- test%>%
+       group_by(offense_team) %>%
+       filter(is_free_throw == 0)%>%
+       mutate(number_of_shots = n(),
+              number_of_makes = sum(is_made_shot), 
+              xFG_perc = mean(xshot_made))%>%
+       #ungroup()%>%
+       mutate(mean_FG = number_of_makes/number_of_shots)%>%
+       select(offense_team, number_of_shots,number_of_makes,mean_FG,xFG_perc,team_logo)
+     
+     
+     FT_team <- FT_team[!duplicated(FT_team$offense_team), ]
+     
+     xPoints_team <- test%>%      
+       group_by(offense_team) %>% 
+       mutate(PTS = sum(score_value),
+              xPTS = sum(xPoints))%>%
+       ungroup()
+     
+     
+     xPoints_team <- xPoints_team[!duplicated(xPoints_team$offense_team), ]
+     
+     xPoints_team_Final <- left_join(xPoints_team, FT_team, by="offense_team")
+     
+     xPoints_team_Final <- xPoints_team_Final%>%
+       mutate(Shot_Making = round((PTS - xPTS)/number_of_shots, 2),
+              xPTS_per_shot = round(xPTS/number_of_shots,2))%>%
+       select(offense_team,team_logo.x,number_of_shots,number_of_makes, mean_FG,xFG_perc,PTS,xPTS, xPTS_per_shot,Shot_Making)
+       
+     
+    
+     
+     
+     defFT_team <- test%>%
+       group_by(defense_team) %>%
+       filter(is_free_throw == 0)%>%
+       mutate(def_number_of_shots = n(),
+              def_number_of_makes = sum(is_made_shot), 
+              def_xFG_perc = mean(xshot_made))%>%
+       #ungroup()%>%
+       mutate(def_mean_FG = def_number_of_makes/def_number_of_shots)%>%
+       select(defense_team, def_number_of_shots,def_number_of_makes,def_mean_FG,def_xFG_perc,team_logo)
+     
+     
+     defFT_team <- defFT_team[!duplicated(defFT_team$defense_team), ]
+     
+     defxPoints_team <- test%>%      
+       group_by(defense_team) %>% 
+       mutate(def_PTS = sum(score_value),
+              def_xPTS = sum(xPoints))%>%
+       ungroup()
+     
+     
+     defxPoints_team <- defxPoints_team[!duplicated(defxPoints_team$defense_team), ]
+     
+     defxPoints_team_Final <- left_join(defxPoints_team, defFT_team, by="defense_team")
+     
+     defxPoints_team_Final <- defxPoints_team_Final%>%
+       mutate(def_Shot_Making = round((def_PTS - def_xPTS)/def_number_of_shots, 2),
+              def_xPTS_per_shot = round(def_xPTS/def_number_of_shots,2))%>%
+       select(-offense_team)%>%
+       rename(offense_team = "defense_team")%>%
+       select(offense_team,def_number_of_shots,def_number_of_makes, def_mean_FG,def_xFG_perc,def_PTS,def_xPTS, def_xPTS_per_shot,def_Shot_Making)
+     
+     
+     xPoints_team_chart <- left_join(defxPoints_team_Final, xPoints_team_Final, by= "offense_team")%>%
+       select(offense_team,def_xPTS_per_shot, xPTS_per_shot)%>%
+       mutate(net_xPTS_per_shot = xPTS_per_shot - def_xPTS_per_shot)
+      
+     
+     
+     
+     logos <- hoopR::load_nba_player_box(2024)%>%
+       select(team_abbreviation,team_logo)%>%
+       rename(offense_team = "team_abbreviation")
+     
+     
+     logos <- logos[!duplicated(logos$offense_team), ]
+     
+     xPoints_team_chart <- left_join(xPoints_team_chart, logos, by= "offense_team")
+     
+     
+     ggplot(aes(x = xPTS_per_shot, y = def_xPTS_per_shot), data = xPoints_team_chart) +
+       #geom_point(aes(x = xPTS_per_shot, y = def_xPTS_per_shot), data = xPoints_team_chart) +
+       #geom_label_repel(aes(label=athlete_display_name.x), size = 2.25)+
+       #geom_point(color = "white")+
+       geom_image(aes(image = team_logo), size = 0.05, asp = 16/9)+
+       geom_text(aes(x = 1.51, y = 1.3,
+                     label = "Elite", size = 12))+
+       geom_text(aes(x = 1.37, y = 1.54,
+                     label = "Bad", size = 12))+
+       geom_text(aes(x = 1.37, y = 1.3,
+                     label = "Good D Bad O",size = 12))+
+       geom_text(aes(x = 1.51, y = 1.54,
+                     label = "Good O Bad D", size = 12))+
+       scale_y_reverse()+
+       geom_hline(yintercept = mean(xPoints_team_chart$def_xPTS_per_shot, linetype = "dashed", color = "white"))+ 
+       geom_vline(xintercept = mean(xPoints_team_chart$xPTS_per_shot, linetype = "dashed", color = "white"))+
+       #geom_smooth(method = "lm", color = "gray", se = FALSE, alpha = 0.1)+
+       theme_minimal() +
+       labs(x = "Offense XPTS per Shot",
+            y = "Defense XPTS per Shot",
+            caption = "By Bucknell Analytics | Data: hoopR",
+            title = "Shot Quality",
+            subtitle = "2023-2024 Season | As of 11/12")+
+       theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))+
+       theme(plot.subtitle = element_text(hjust = 0.5))
+     
+     
